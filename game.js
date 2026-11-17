@@ -84,7 +84,7 @@ const TWIN_SIZE = 1.15, TWIN_SPLIT_AT = 0.45, TWIN_CHILD = 0.74;
 const specialChance = (score) => clamp(0.05 + score * 0.0012, 0, 0.2);
 // ---- arena events: one starts after every pen clear ----
 const EVENT_DUR = 15, EVENT_KINDS = ['rush', 'calm', 'wind', 'swap'];
-const RUSH_RATE = 1.5, CALM_RATE = 0.6, CALM_SPEED = 0.6, WIND_SPEED = 50, SWAP_WARN = 3.5, SWAP_DUR = 5.5, SWAP_FLASH = 2;
+const RUSH_RATE = 1.5, CALM_RATE = 0.6, CALM_SPEED = 0.6, WIND_SPEED = 50, SWAP_WARN = 3.5, SWAP_DUR = 5.5, SWAP_FLASH = 2, SWAP_SLOW = 0.9, SWAP_ORB = 0.5;
 const EVENT_NAME = { rush: 'RUSH! x2 POINTS', calm: 'CALM', wind: 'WIND!', swap: 'PEN SWAP!' };
 // ---- boss bomb ----
 const BOSS_EVERY = 100, BOSS_FUSE = 11, BOSS_SIZE = 1.9, BOSS_SPEED = 0.5, BOSS_POINTS = 5;
@@ -316,7 +316,8 @@ const Sound = (() => {
       case 'crack': noise(t, 0.12, { v: 0.4, f: 1800, type: 'bandpass', q: 1.5 }); osc(t, 220, 0.1, { v: 0.25, type: 'square', to: 110 }); break;
       case 'bossdown': noise(t, 0.6, { v: 0.5, f: 2400, to: 200 }); [392, 523, 659, 784, 1047].forEach((f, i) => osc(t + 0.1 + i * 0.07, f, 0.16, { v: 0.15 })); break;
       case 'boss': osc(t, 110, 0.5, { v: 0.35, type: 'sawtooth', to: 70 }); osc(t + 0.25, 98, 0.6, { v: 0.35, type: 'sawtooth', to: 55 }); break;
-      case 'swap': osc(t, 500, 0.16, { v: 0.14, type: 'triangle', to: 1000 }); osc(t + 0.12, 1000, 0.16, { v: 0.14, type: 'triangle', to: 500 }); break;
+      case 'swaptick': { const f = [0, 1568, 1175, 880][arg] || 880; osc(t, f, 0.09, { v: 0.2, type: 'square' }); osc(t + 0.1, f, 0.09, { v: 0.14, type: 'square' }); break; }
+      case 'swap': noise(t, 0.35, { v: 0.25, f: 900, type: 'bandpass', q: 2, to: 5000 }); osc(t, 500, 0.16, { v: 0.14, type: 'triangle', to: 1000 }); osc(t + 0.12, 1000, 0.16, { v: 0.14, type: 'triangle', to: 500 }); break;
       case 'rewind': osc(t, 1400, 0.5, { v: 0.16, type: 'sawtooth', to: 180 }); noise(t, 0.5, { v: 0.15, f: 600, type: 'bandpass', q: 3, to: 4000 }); break;
       case 'mission': [659, 784, 988, 1319, 1568].forEach((f, i) => osc(t + i * 0.06, f, 0.14, { v: 0.14, type: 'triangle' })); break;
       case 'junk': osc(t, 180, 0.2, { v: 0.2, type: 'square', to: 90 }); break;
@@ -1075,7 +1076,18 @@ function endEvent() { S.event = null; refreshSpeeds(); }
 function eventTick(dt) {
   const ev = S.event; if (!ev) return;
   ev.t -= dt;
-  if (ev.kind === 'swap' && !ev.done && ev.max - ev.t >= SWAP_WARN) { ev.done = true; swapPens(ev.a, ev.b); }
+  if (ev.kind === 'swap' && !ev.done) {
+    const left = SWAP_WARN - (ev.max - ev.t), sec = Math.ceil(left);
+    if (sec !== ev.sec && sec > 0) { ev.sec = sec; ev.pop = 0; Sound.play('swaptick', sec); } // 3.. 2.. 1..
+    if (ev.pop !== undefined) ev.pop += dt;
+    if (left <= 0) {
+      ev.done = true;
+      const ca = PAL[ev.a.color].name, cb = PAL[ev.b.color].name;
+      swapPens(ev.a, ev.b);
+      S.slowT = Math.max(S.slowT, SWAP_SLOW); // a short slow-mo beat so you can re-aim
+      S.banner = { t: 0, life: 1.1, text: 'SWAPPED!', sub: ca + ' <> ' + cb };
+    }
+  }
   if (ev.t <= 0) endEvent();
 }
 const eventRate = () => (S.event ? (S.event.kind === 'rush' ? RUSH_RATE : S.event.kind === 'calm' ? CALM_RATE : 1) : 1);
@@ -1093,6 +1105,7 @@ function swapPens(a, b) {
   buildBg();
   Sound.play('swap'); vibrate(25);
   S.penFlash = { pens: [a, b], t: SWAP_FLASH }; // both pens keep shouting their new color for a moment
+  S.shake = Math.max(S.shake, 0.3);
   for (const p of [a, b]) {
     addFx({ type: 'ring', x: p.cx, y: p.cy, life: 0.6, s: p.w * 0.2, grow: p.w * 0.6, color: PAL[p.color].base, lw: LW * 3 });
     sparkBurst(p.cx, p.cy, PAL[p.color].base, 10, R);
@@ -1492,6 +1505,7 @@ function step(dt) {
   if (mode !== 'play') return;
 
   S.time += dt;
+  if (S.shake > 0) S.shake = Math.max(0, S.shake - dt * 1.4); // every shake fades out within a second or so
   if (S.banner) { S.banner.t += dt; if (S.banner.t > S.banner.life) S.banner = null; }
   if (S.hint > 0) S.hint -= dt;
   if (S.comboT > 0) S.comboT -= dt;
@@ -2754,6 +2768,8 @@ function drawSwapPreview(g, p, c, k, left, t) {
   // rising fill in the incoming color, with diagonal stripes so it never reads as the pen's own color
   const fh = p.h * (0.15 + 0.85 * k);
   g.fillStyle = hexA(pal.base, 0.55); g.fillRect(p.x, p.y + p.h - fh, p.w, fh);
+  // final second: the whole pen strobes in its new color so the moment is unmistakable
+  if (left < 1 && Math.floor(t * 9) % 2) { g.fillStyle = hexA(pal.base, 0.8); g.fillRect(p.x, p.y, p.w, p.h); }
   g.strokeStyle = hexA(pal.light, 0.7); g.lineWidth = p.w * 0.05;
   for (let s = -p.h; s < p.w + p.h; s += p.w * 0.16) { g.beginPath(); g.moveTo(p.x + s + ((t * 30) % (p.w * 0.16)), p.y + p.h); g.lineTo(p.x + s - fh + ((t * 30) % (p.w * 0.16)), p.y + p.h - fh); g.stroke(); }
   g.restore();
@@ -2792,11 +2808,49 @@ function drawSwapArrow(g, a, b, t) {
   head(x2, y2, mx, my); head(x1, y1, mx, my);
   g.restore();
 }
+// drawn above the bombs: a big "SWAP IN 3" in the middle of the board, then each color flying to its new pen
+function drawSwapTop(g, t) {
+  const ev = S.event;
+  if (ev && ev.kind === 'swap' && !ev.done && ev.a && ev.b && ev.sec) {
+    const cx = A.x + A.w / 2, cy = A.y + A.h / 2, pop = ev.pop || 0;
+    const k = pop < 0.25 ? 1 + 0.45 * (1 - pop / 0.25) : 1;
+    const br = R * 0.95, gap = R * 2.6;
+    g.save(); g.globalAlpha = 0.92;
+    rrect(g, cx - gap - br * 1.6, cy - R * 2.1, (gap + br * 1.6) * 2, R * 3.9, R * 0.9);
+    g.fillStyle = 'rgba(29,16,51,0.72)'; g.fill();
+    outlineText(g, 'SWAP IN', cx, cy - R * 1.35, R * 0.8, '#ffffff', { lw: R * 0.2 });
+    outlineText(g, String(ev.sec), cx, cy + R * 0.25, R * 2 * k, '#ffe14d', { lw: R * 0.35 });
+    for (const [p, side] of [[ev.a, -1], [ev.b, 1]]) {
+      const bx = cx + side * gap, by = cy + R * 0.2, pal = PAL[p.color];
+      g.beginPath(); g.arc(bx, by, br, 0, TAU); g.fillStyle = pal.base; g.fill(); g.lineWidth = LW; g.strokeStyle = '#ffffff'; g.stroke();
+      drawSymbol(g, p.color, bx, by, br * 0.55, '#ffffff', INK, LW * 0.9);
+    }
+    g.restore();
+  }
+  const pf = S.penFlash;
+  if (pf) {
+    const e = (SWAP_FLASH - pf.t) / SWAP_ORB;
+    if (e < 1) {
+      const [a, b] = pf.pens, q = e < 0.5 ? 2 * e * e : 1 - Math.pow(-2 * e + 2, 2) / 2;
+      for (const [to, from] of [[a, b], [b, a]]) { // each pen's new color comes from the other pen
+        const x = from.cx + (to.cx - from.cx) * q, y = from.cy + (to.cy - from.cy) * q - Math.sin(q * Math.PI) * R * 2.5;
+        const r = R * (1.3 + Math.sin(q * Math.PI) * 0.5), pal = PAL[to.color];
+        g.save();
+        g.beginPath(); g.arc(x, y, r * 1.5, 0, TAU); g.fillStyle = hexA(pal.base, 0.3); g.fill();
+        g.beginPath(); g.arc(x, y, r, 0, TAU); g.fillStyle = pal.base; g.fill(); g.lineWidth = LW * 1.2; g.strokeStyle = '#ffffff'; g.stroke();
+        drawSymbol(g, to.color, x, y, r * 0.55, '#ffffff', INK, LW * 0.9);
+        g.restore();
+      }
+    }
+  }
+}
 // right after a swap: a pulsing border in the pen's new color and "NOW <COLOR>"
 function drawSwapDone(g, p, k, t) {
   const pal = PAL[p.color], pu = 0.5 + 0.5 * Math.sin(t * 14);
   g.save();
   g.globalAlpha = Math.min(1, k * 2.5);
+  const land = (1 - k) * SWAP_FLASH / SWAP_ORB; // the flying color lands at 1
+  if (land >= 1 && land < 1.4) { g.fillStyle = `rgba(255,255,255,${0.85 * (1 - (land - 1) / 0.4)})`; g.fillRect(p.x, p.y, p.w, p.h); }
   g.fillStyle = hexA(pal.base, 0.25 + pu * 0.15); g.fillRect(p.x, p.y, p.w, p.h);
   g.lineWidth = LW * (2.5 + pu * 2); g.strokeStyle = pal.base; g.strokeRect(p.x + LW * 2, p.y + LW * 2, p.w - LW * 4, p.h - LW * 4);
   const br = p.w * 0.15, by = p.cy - p.h * 0.08;
@@ -3279,7 +3333,7 @@ const ORDER = { sorted: 0, floor: 1, sucked: 2, held: 3 };
 function render(t) {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   let sx = 0, sy = 0;
-  if (S && S.shake > 0) { const k = S.shake * S.shake * R * 0.7; sx = rand(-k, k); sy = rand(-k, k); }
+  if (S && S.shake > 0 && (mode === 'play' || mode === 'booming')) { const k = S.shake * S.shake * R * 0.7; sx = rand(-k, k); sy = rand(-k, k); }
   ctx.save(); ctx.translate(sx, sy);
   ctx.drawImage(bg, 0, 0, W, H);
   if (mode === 'menu' || !S) {
@@ -3301,6 +3355,7 @@ function render(t) {
   drawTargeting(ctx, t);
   drawShieldBubble(ctx, t);
   drawFx(ctx);
+  drawSwapTop(ctx, t);
   ctx.restore();
   drawCombo(ctx);
   drawTip(ctx);
